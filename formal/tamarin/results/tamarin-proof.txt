@@ -1,0 +1,565 @@
+theory Hybrid_WireGuard_V23
+
+begin
+
+// Function signature and definition of the equational theory E
+
+functions: aead/3, confirm/4, cookie/3, cookie_reply/5, fst/1,
+           init_body/12, init_msg/3, init_request/7, kdf/2, kem_ct/2, kem_pk/1,
+           kid/3, mac/2, next/1, pair/2, pk/1, public_key/3, response_body/10,
+           response_msg/1, session_key/7, snd/1
+equations: fst(<x.1, x.2>) = x.1, snd(<x.1, x.2>) = x.2
+
+rule (modulo E) Setup_Pair:
+   [
+   Fr( ~lti ), Fr( ~spqi ), Fr( ~taui ), Fr( ~ltr ), Fr( ~spqr ),
+   Fr( ~taur ), Fr( ~psk ), Fr( ~rk0 ), Fr( ~kri0 )
+   ]
+  --[ PairSetup( $I, $R ) ]->
+   [
+   !Device( $I, ~lti, ~spqi, ~taui ), !Device( $R, ~ltr, ~spqr, ~taur ),
+   !Pub( $I, pk(~lti), kem_pk(~spqi) ), !Pub( $R, pk(~ltr), kem_pk(~spqr) ),
+   !Psk( $I, $R, ~psk ), !Psk( $R, $I, ~psk ),
+   !Ratchet( $I, $R, 'e0', ~rk0, ~kri0 ),
+   !Ratchet( $R, $I, 'e0', ~rk0, ~kri0 ),
+   Out( public_key($I, pk(~lti), kem_pk(~spqi)) ),
+   Out( public_key($R, pk(~ltr), kem_pk(~spqr)) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Initiator_Send_No_Cookie:
+   [
+   !Device( $I, lti, spqi, taui ), !Pub( $R, pk_r, pkpq_r ),
+   !Psk( $I, $R, psk ), !Ratchet( $I, $R, epoch, rk, kri ), Fr( ~sid_i ),
+   Fr( ~eph_i ), Fr( ~epq_i ), Fr( ~kem_static ), Fr( ~counter ), Fr( ~src )
+   ]
+  --[ InitNoCookie( $I, $R, ~src, ~sid_i ) ]->
+   [
+   Out( init_request($I, $R, ~src, ~sid_i, pk(~eph_i), kem_pk(~epq_i),
+                     epoch)
+   ),
+   PendingInitRequest( $I, $R, ~src, ~sid_i, pk(~eph_i), kem_pk(~epq_i),
+                       epoch
+   ),
+   NeedCookie( $I, $R, ~src, ~sid_i, ~eph_i, ~epq_i, ~kem_static, ~counter,
+               epoch, rk, kri, psk, pk_r, pkpq_r
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Responder_Send_CookieReply:
+   [
+   PendingInitRequest( $I, $R, src, sid_i, eph_i_pub, epq_i_pub, epoch ),
+   !Device( $R, ltr, spqr, taur )
+   ]
+  --[ CookieChallenge( $R, $I, src, sid_i ) ]->
+   [
+   Out( cookie_reply($R, $I, src, sid_i, cookie(src, sid_i, taur)) ),
+   PendingCookieReply( $R, $I, src, sid_i, cookie(src, sid_i, taur) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Initiator_Send_With_Cookie:
+   [
+   NeedCookie( $I, $R, src, sid_i, eph_i, epq_i, kem_static, counter, epoch,
+               rk, kri, psk, pk_r, pkpq_r
+   ),
+   PendingCookieReply( $R, $I, src, sid_i, cookie_token )
+   ]
+  --[
+  InitRunning( $I, $R,
+               session_key(psk, pk(eph_i), kem_pk(epq_i), kem_static, rk, epoch,
+                           'empty_ratchet_ct'),
+               sid_i, epoch, counter
+  )
+  ]->
+   [
+   Out( init_msg(init_body($I, $R, src, sid_i, pk(eph_i), kem_pk(epq_i),
+                           epoch, 'bootstrap', 'empty_ratchet_ct', kem_ct(kem_static, pkpq_r),
+                           aead(kdf(psk, kem_static), 'identity', $I), counter),
+                 cookie_token,
+                 mac(init_body($I, $R, src, sid_i, pk(eph_i), kem_pk(epq_i), epoch,
+                               'bootstrap', 'empty_ratchet_ct', kem_ct(kem_static, pkpq_r),
+                               aead(kdf(psk, kem_static), 'identity', $I), counter),
+                     psk))
+   ),
+   PendingInitWithCookie( $I, $R, src, sid_i, pk(eph_i), kem_pk(epq_i),
+                          epoch, 'bootstrap', 'empty_ratchet_ct', kem_static,
+                          aead(kdf(psk, kem_static), 'identity', $I), counter, psk
+   ),
+   InitSent( $I, $R, src, sid_i, epoch, counter, rk, kri,
+             session_key(psk, pk(eph_i), kem_pk(epq_i), kem_static, rk, epoch,
+                         'empty_ratchet_ct'),
+             eph_i, epq_i, kem_static
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Responder_Validate_Cookie_And_Mac:
+   [
+   PendingInitWithCookie( $I, $R, src, sid_i, eph_i_pub, epq_i_pub, epoch,
+                          mode, ratchet_ct, kem_static, identity, counter, psk
+   ),
+   !Device( $R, ltr, spqr, taur ), !Psk( $I, $R, psk )
+   ]
+  --[
+  CookieValid( $R, $I, src, sid_i,
+               init_body($I, $R, src, sid_i, eph_i_pub, epq_i_pub, epoch, mode,
+                         ratchet_ct, kem_ct(kem_static, kem_pk(spqr)), identity, counter)
+  ),
+  Mac1Valid( $R, $I,
+             init_body($I, $R, src, sid_i, eph_i_pub, epq_i_pub, epoch, mode,
+                       ratchet_ct, kem_ct(kem_static, kem_pk(spqr)), identity, counter)
+  )
+  ]->
+   [
+   ValidInit( $R, $I, src, sid_i, eph_i_pub, epq_i_pub, epoch, mode,
+              ratchet_ct, kem_static, identity, counter, psk, ltr, spqr
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Responder_StaticKem_And_Response:
+   [
+   ValidInit( $R, $I, src, sid_i, eph_i_pub, epq_i_pub, epoch, mode,
+              ratchet_ct, kem_static, identity, counter, psk, ltr, spqr
+   ),
+   !Ratchet( $R, $I, epoch, rk, kri ), Fr( ~sid_r ), Fr( ~eph_r ),
+   Fr( ~resp_kem ), Fr( ~next_pub ), Fr( ~next_secret )
+   ]
+  --[
+  StaticKemDecap( $R, $I, src, sid_i, kem_ct(kem_static, kem_pk(spqr)) ),
+  AcceptCounter( $I, $R, counter ),
+  RCommit( $R, $I,
+           session_key(psk, eph_i_pub, epq_i_pub, kem_static, rk, epoch,
+                       ratchet_ct),
+           sid_i, ~sid_r, epoch, next(epoch), kid(rk, next(epoch), ~next_pub),
+           counter
+  ),
+  ConfirmBind( $R, $I, epoch, next(epoch), kid(rk, next(epoch), ~next_pub),
+               rk, ~next_pub
+  )
+  ]->
+   [
+   Out( response_msg(response_body($I, $R, sid_i, ~sid_r, epoch,
+                                   next(epoch), kid(rk, next(epoch), ~next_pub), pk(~eph_r),
+                                   kem_ct(~resp_kem, epq_i_pub),
+                                   confirm(session_key(psk, eph_i_pub, epq_i_pub, kem_static, rk, epoch,
+                                                       ratchet_ct),
+                                           next(epoch), kid(rk, next(epoch), ~next_pub), ~next_pub)))
+   ),
+   PendingResponse( $I, $R, sid_i, ~sid_r, epoch, next(epoch),
+                    kid(rk, next(epoch), ~next_pub), pk(~eph_r),
+                    kem_ct(~resp_kem, epq_i_pub), ~next_pub,
+                    session_key(psk, eph_i_pub, epq_i_pub, kem_static, rk, epoch, ratchet_ct)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Initiator_Consume_Response:
+   [
+   InitSent( $I, $R, src, sid_i, epoch, counter, rk, kri, k, eph_i, epq_i,
+             kem_static
+   ),
+   PendingResponse( $I, $R, sid_i, sid_r, epoch, next(epoch),
+                    kid(rk, next(epoch), next_pub), eph_r_pub, resp_kem_ct, next_pub, k
+   )
+   ]
+  --[
+  ICommit( $I, $R, k, sid_i, sid_r, epoch, next(epoch),
+           kid(rk, next(epoch), next_pub), counter
+  )
+  ]->
+   [ InitiatorEstablished( $I, $R, k ) ]
+
+  /* has exactly the trivial AC variant */
+
+restriction UniqueCounterAcceptance:
+  "‚àÄ I R c #i #j.
+    ((AcceptCounter( I, R, c ) @ #i) ‚à?(AcceptCounter( I, R, c ) @ #j)) ‚á?    (#i = #j)"
+  // safety formula
+
+  /*
+  expanded formula:
+  "‚àÄ I R c #i #j.
+    ((AcceptCounter( I, R, c ) @ #i) ‚à?(AcceptCounter( I, R, c ) @ #j)) ‚á?    (#i = #j)"
+  */
+
+restriction UniquePairSetup:
+  "‚àÄ I R #i #j.
+    ((PairSetup( I, R ) @ #i) ‚à?(PairSetup( I, R ) @ #j)) ‚á?(#i = #j)"
+  // safety formula
+
+  /*
+  expanded formula:
+  "‚àÄ I R #i #j.
+    ((PairSetup( I, R ) @ #i) ‚à?(PairSetup( I, R ) @ #j)) ‚á?(#i = #j)"
+  */
+
+restriction UniqueDeviceParticipation:
+  "‚àÄ A B C D #i #j.
+    (((PairSetup( A, B ) @ #i) ‚à?(PairSetup( C, D ) @ #j)) ‚à?     ((((A = C) ‚à?(A = D)) ‚à?(B = C)) ‚à?(B = D))) ‚á?    (#i = #j)"
+  // safety formula
+
+  /*
+  expanded formula:
+  "‚àÄ A B C D #i #j.
+    (((PairSetup( A, B ) @ #i) ‚à?(PairSetup( C, D ) @ #j)) ‚à?     ((((A = C) ‚à?(A = D)) ‚à?(B = C)) ‚à?(B = D))) ‚á?    (#i = #j)"
+  */
+
+restriction DistinctPeerRoles:
+  "‚àÄ I R #i. (PairSetup( I, R ) @ #i) ‚á?(¬¨(I = R))"
+  // safety formula
+
+  /*
+  expanded formula:
+  "‚àÄ I R #i. (PairSetup( I, R ) @ #i) ‚á?(¬¨(I = R))"
+  */
+
+lemma protocol_executable:
+  exists-trace
+  "‚à?I R k sid_i sid_r epoch next_epoch next_kid counter #i #r.
+    (InitRunning( I, R, k, sid_i, epoch, counter ) @ #i) ‚à?    (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+     ) @ #r)"
+/*
+guarded formula characterizing all satisfying traces:
+"‚à?I R k sid_i sid_r epoch next_epoch next_kid counter #i #r.
+  (InitRunning( I, R, k, sid_i, epoch, counter ) @ #i) ‚à?  (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+   ) @ #r)"
+*/
+simplify
+solve( NeedCookie( $I, $R, src, sid_i, eph_i, epq_i, kem_static, counter,
+                   epoch, rk, kri, psk, pk_r, pkpq_r
+       ) ‚ñ∂‚ÇÄ #i )
+  case Initiator_Send_No_Cookie_case_1
+  solve( PendingCookieReply( $R, $I, ~src, ~sid_i, cookie_token ) ‚ñ∂‚ÇÅ #i )
+    case Responder_Send_CookieReply
+    solve( InitSent( $I, $R, src.1, ~sid_i, 'e0', ~counter, rk, kri,
+                     session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                 'empty_ratchet_ct'),
+                     eph_i.1, epq_i.1, kem_static.1
+           ) ‚ñ∂‚ÇÄ #r )
+      case Initiator_Send_With_Cookie
+      solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                              kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                              session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                          'empty_ratchet_ct')
+             ) ‚ñ∂‚ÇÅ #r )
+        case Responder_StaticKem_And_Response
+        SOLVED // trace found
+      qed
+    qed
+  qed
+qed
+
+lemma session_key_secrecy:
+  all-traces
+  "‚àÄ I R k sid_i sid_r epoch next_epoch next_kid counter #i.
+    (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+     ) @ #i) ‚á?    (¬¨(‚à?#j. K( k ) @ #j))"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?I R k sid_i sid_r epoch next_epoch next_kid counter #i.
+  (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+   ) @ #i)
+ ‚à?  ‚à?#j. (K( k ) @ #j)"
+*/
+simplify
+solve( InitSent( $I, $R, src, sid_i, epoch, counter, rk, kri, k, eph_i,
+                 epq_i, kem_static
+       ) ‚ñ∂‚ÇÄ #i )
+  case Initiator_Send_With_Cookie_case_1
+  solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                          kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                          session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                      'empty_ratchet_ct')
+         ) ‚ñ∂‚ÇÅ #i )
+    case Responder_StaticKem_And_Response
+    solve( !KU( session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static,
+                            ~rk0, 'e0', 'empty_ratchet_ct')
+           ) @ #vk )
+      case c_session_key
+      by solve( !KU( ~psk ) @ #vk.1 )
+    qed
+  qed
+next
+  case Initiator_Send_With_Cookie_case_2
+  solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                          kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                          session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                      'empty_ratchet_ct')
+         ) ‚ñ∂‚ÇÅ #i )
+    case Responder_StaticKem_And_Response
+    solve( !KU( session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static,
+                            ~rk0, 'e0', 'empty_ratchet_ct')
+           ) @ #vk )
+      case c_session_key
+      by solve( !KU( ~psk ) @ #vk.1 )
+    qed
+  qed
+qed
+
+lemma responder_agreement:
+  all-traces
+  "‚àÄ R I k sid_i sid_r epoch next_epoch next_kid counter #r.
+    (RCommit( R, I, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+     ) @ #r) ‚á?    (‚à?#i. (InitRunning( I, R, k, sid_i, epoch, counter ) @ #i) ‚à?(#i < #r))"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?R I k sid_i sid_r epoch next_epoch next_kid counter #r.
+  (RCommit( R, I, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+   ) @ #r)
+ ‚à?  ‚àÄ #i. (InitRunning( I, R, k, sid_i, epoch, counter ) @ #i) ‚á?¬¨(#i < #r)"
+*/
+simplify
+solve( ValidInit( $R, $I, src, sid_i, eph_i_pub, epq_i_pub, epoch, mode,
+                  ratchet_ct, kem_static, identity, counter, psk, ltr, spqr
+       ) ‚ñ∂‚ÇÄ #r )
+  case Responder_Validate_Cookie_And_Mac_case_1
+  solve( !Ratchet( $R, $I, 'e0', rk, kri ) ‚ñ∂‚ÇÅ #r )
+    case Setup_Pair_case_1
+    by contradiction /* from formulas */
+  next
+    case Setup_Pair_case_2
+    by contradiction /* from formulas */
+  qed
+next
+  case Responder_Validate_Cookie_And_Mac_case_2
+  solve( !Ratchet( $R, $I, 'e0', rk, kri ) ‚ñ∂‚ÇÅ #r )
+    case Setup_Pair_case_1
+    by contradiction /* from formulas */
+  next
+    case Setup_Pair_case_2
+    by contradiction /* from formulas */
+  qed
+qed
+
+lemma initiator_agreement:
+  all-traces
+  "‚àÄ I R k sid_i sid_r epoch next_epoch next_kid counter #i.
+    (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+     ) @ #i) ‚á?    (‚à?#r.
+      (RCommit( R, I, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+       ) @ #r) ‚à?      (#r < #i))"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?I R k sid_i sid_r epoch next_epoch next_kid counter #i.
+  (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+   ) @ #i)
+ ‚à?  ‚àÄ #r.
+   (RCommit( R, I, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+    ) @ #r)
+  ‚á?   ¬¨(#r < #i)"
+*/
+simplify
+solve( InitSent( $I, $R, src, sid_i, epoch, counter, rk, kri, k, eph_i,
+                 epq_i, kem_static
+       ) ‚ñ∂‚ÇÄ #i )
+  case Initiator_Send_With_Cookie_case_1
+  solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                          kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                          session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                      'empty_ratchet_ct')
+         ) ‚ñ∂‚ÇÅ #i )
+    case Responder_StaticKem_And_Response
+    by contradiction /* from formulas */
+  qed
+next
+  case Initiator_Send_With_Cookie_case_2
+  solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                          kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                          session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                      'empty_ratchet_ct')
+         ) ‚ñ∂‚ÇÅ #i )
+    case Responder_StaticKem_And_Response
+    by contradiction /* from formulas */
+  qed
+qed
+
+lemma initiator_injective_agreement:
+  all-traces
+  "‚àÄ I R k sid_i sid_r epoch next_epoch next_kid counter #i #j.
+    ((ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+      ) @ #i) ‚à?     (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+      ) @ #j)) ‚á?    (#i = #j)"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?I R k sid_i sid_r epoch next_epoch next_kid counter #i #j.
+  (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+   ) @ #i) ‚à?  (ICommit( I, R, k, sid_i, sid_r, epoch, next_epoch, next_kid, counter
+   ) @ #j)
+ ‚à?  ¬¨(#i = #j)"
+*/
+simplify
+solve( (#i < #j)  ‚à?(#j < #i) )
+  case case_1
+  solve( InitSent( $I, $R, src, sid_i, epoch, counter, rk, kri, k, eph_i,
+                   epq_i, kem_static
+         ) ‚ñ∂‚ÇÄ #i )
+    case Initiator_Send_With_Cookie_case_1
+    solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                            kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                            session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                        'empty_ratchet_ct')
+           ) ‚ñ∂‚ÇÅ #i )
+      case Responder_StaticKem_And_Response
+      solve( InitSent( $I, $R, src.1, ~sid_i, 'e0', ~counter, ~rk0, kri,
+                       session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                   'empty_ratchet_ct'),
+                       eph_i.1, epq_i.1, kem_static.1
+             ) ‚ñ∂‚ÇÄ #j )
+        case Initiator_Send_With_Cookie
+        by contradiction /* cyclic */
+      qed
+    qed
+  next
+    case Initiator_Send_With_Cookie_case_2
+    solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                            kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                            session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                        'empty_ratchet_ct')
+           ) ‚ñ∂‚ÇÅ #i )
+      case Responder_StaticKem_And_Response
+      solve( InitSent( $I, $R, src.1, ~sid_i, 'e0', ~counter, ~rk0, kri,
+                       session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                   'empty_ratchet_ct'),
+                       eph_i.1, epq_i.1, kem_static.1
+             ) ‚ñ∂‚ÇÄ #j )
+        case Initiator_Send_With_Cookie
+        by contradiction /* cyclic */
+      qed
+    qed
+  qed
+next
+  case case_2
+  solve( InitSent( $I, $R, src, sid_i, epoch, counter, rk, kri, k, eph_i,
+                   epq_i, kem_static
+         ) ‚ñ∂‚ÇÄ #i )
+    case Initiator_Send_With_Cookie_case_1
+    solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                            kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                            session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                        'empty_ratchet_ct')
+           ) ‚ñ∂‚ÇÅ #i )
+      case Responder_StaticKem_And_Response
+      solve( InitSent( $I, $R, src.1, ~sid_i, 'e0', ~counter, ~rk0, kri,
+                       session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                   'empty_ratchet_ct'),
+                       eph_i.1, epq_i.1, kem_static.1
+             ) ‚ñ∂‚ÇÄ #j )
+        case Initiator_Send_With_Cookie
+        by contradiction /* cyclic */
+      qed
+    qed
+  next
+    case Initiator_Send_With_Cookie_case_2
+    solve( PendingResponse( $I, $R, ~sid_i, sid_r, 'e0', next('e0'),
+                            kid(~rk0, next('e0'), next_pub), eph_r_pub, resp_kem_ct, next_pub,
+                            session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                        'empty_ratchet_ct')
+           ) ‚ñ∂‚ÇÅ #i )
+      case Responder_StaticKem_And_Response
+      solve( InitSent( $I, $R, src.1, ~sid_i, 'e0', ~counter, ~rk0, kri,
+                       session_key(~psk, pk(~eph_i), kem_pk(~epq_i), ~kem_static, ~rk0, 'e0',
+                                   'empty_ratchet_ct'),
+                       eph_i.1, epq_i.1, kem_static.1
+             ) ‚ñ∂‚ÇÄ #j )
+        case Initiator_Send_With_Cookie
+        by contradiction /* cyclic */
+      qed
+    qed
+  qed
+qed
+
+lemma responder_counter_replay_rejected:
+  all-traces
+  "‚àÄ I R counter #i #j.
+    ((AcceptCounter( I, R, counter ) @ #i) ‚à?     (AcceptCounter( I, R, counter ) @ #j)) ‚á?    (#i = #j)"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?I R counter #i #j.
+  (AcceptCounter( I, R, counter ) @ #i) ‚à?  (AcceptCounter( I, R, counter ) @ #j)
+ ‚à?  ¬¨(#i = #j)"
+*/
+simplify
+by contradiction /* from formulas */
+
+lemma cookie_gate_before_static_kem:
+  all-traces
+  "‚àÄ R I src sid_i ct #d.
+    (StaticKemDecap( R, I, src, sid_i, ct ) @ #d) ‚á?    (‚à?body #c. (CookieValid( R, I, src, sid_i, body ) @ #c) ‚à?(#c < #d))"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?R I src sid_i ct #d.
+  (StaticKemDecap( R, I, src, sid_i, ct ) @ #d)
+ ‚à?  ‚àÄ body #c. (CookieValid( R, I, src, sid_i, body ) @ #c) ‚á?¬¨(#c < #d)"
+*/
+simplify
+solve( ValidInit( $R, $I, src, sid_i, eph_i_pub, epq_i_pub, epoch, mode,
+                  ratchet_ct, kem_static, identity, counter, psk, ltr, spqr
+       ) ‚ñ∂‚ÇÄ #d )
+  case Responder_Validate_Cookie_And_Mac_case_1
+  by contradiction /* from formulas */
+next
+  case Responder_Validate_Cookie_And_Mac_case_2
+  by contradiction /* from formulas */
+qed
+
+lemma response_confirm_binds_next_ratchet:
+  all-traces
+  "‚àÄ R I epoch next_epoch next_kid rk next_pub #i.
+    (ConfirmBind( R, I, epoch, next_epoch, next_kid, rk, next_pub ) @ #i) ‚á?    ((next_epoch = next(epoch)) ‚à?     (next_kid = kid(rk, next_epoch, next_pub)))"
+/*
+guarded formula characterizing all counter-examples:
+"‚à?R I epoch next_epoch next_kid rk next_pub #i.
+  (ConfirmBind( R, I, epoch, next_epoch, next_kid, rk, next_pub ) @ #i)
+ ‚à?  ((¬¨(next_epoch = next(epoch))) ‚à?   (¬¨(next_kid = kid(rk, next_epoch, next_pub))))"
+*/
+simplify
+by contradiction /* from formulas */
+
+/* All wellformedness checks were successful. */
+
+/*
+Generated from:
+Tamarin version 1.12.0
+Maude version 3.1
+Git revision: 82780bbaf3328a45f624ddb41e51bf75425f851c, branch: HEAD
+Compiled at: 2026-06-08 03:52:53.338350066 UTC
+*/
+
+end
+
+==============================================================================
+summary of summaries:
+
+analyzed: formal/tamarin/hybrid_wireguard_v23.spthy
+
+  processing time: 8.59s
+  
+  protocol_executable (exists-trace): verified (6 steps)
+  session_key_secrecy (all-traces): verified (8 steps)
+  responder_agreement (all-traces): verified (8 steps)
+  initiator_agreement (all-traces): verified (6 steps)
+  initiator_injective_agreement (all-traces): verified (16 steps)
+  responder_counter_replay_rejected (all-traces): verified (2 steps)
+  cookie_gate_before_static_kem (all-traces): verified (4 steps)
+  response_confirm_binds_next_ratchet (all-traces): verified (2 steps)
+
+==============================================================================
+maude tool: 'maude'
+ checking version: 3.1. OK.
+ checking installation: OK.
+[Theory Hybrid_WireGuard_V23] Theory loaded
+[Theory Hybrid_WireGuard_V23] Theory translated
+[Theory Hybrid_WireGuard_V23] Derivation checks started
+[Theory Hybrid_WireGuard_V23] Derivation checks ended
+[Theory Hybrid_WireGuard_V23] Theory closed
+[Saturating Sources] Step 1 (Max 5)
+[Saturating Sources] Done

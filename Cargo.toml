@@ -1,0 +1,70 @@
+[package]
+authors = [""]
+edition = "2018"
+license = "MIT"
+name = "wireguard-rs-pq"
+version = "0.1.1"
+
+[dependencies]
+aead = "^0.3"
+arraydeque = "0.4.5"
+blake2 = "^0.9"
+byteorder = "1.3"
+chacha20poly1305 = "^0.7"
+chacha20 = "0.9.1"
+clear_on_drop = "0.2.3"
+cpuprofiler = {version = "*", optional = true}
+crossbeam-channel = "^0.5"
+dashmap = "^4.0"
+digest = "^0.9"
+env_logger = "^0.8"
+generic-array = "^0.14"
+hex = "0.4"
+hjul = "0.2.2"
+hmac = "^0.10"
+log = {version = "0.4", features = ["max_level_trace", "release_max_level_info"]}
+num_cpus = "^1.10"
+parking_lot = "^0.11"
+rand = "^0.7"
+rand_core = "^0.5"
+ring = "0.16"
+spin = "0.7"
+zerocopy = "0.3"
+rand_oqs = { package = "rand", version = "^0.8" }
+sha256 = "=1.5.0"
+meansd = "2.1.0"
+oqs = { version = "0.10.1", default-features = false }
+hkdf = "0.11"
+
+[dependencies.treebitmap]
+package = "ip_network_table-deps-treebitmap"
+version = "0.5.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "^0.2"
+
+[dependencies.x25519-dalek]
+version = "^1.1"
+
+[dependencies.subtle]
+version = "^2.4"
+#features = ["nightly"]
+
+[features]
+unstable = []
+profiler = ["cpuprofiler"]
+start_up = []
+post_quantum = []
+hybrid = []
+hybrid_new = []
+
+[dev-dependencies]
+pnet_packet = "^0.35"
+proptest = "^0.10"
+rand_chacha = "^0.2"
+
+[profile.dev]
+opt-level = 2
+
+[profile.release]
+opt-level = 2
